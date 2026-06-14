@@ -8,7 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="CAPRation">
 <meta name="theme-color" content="#1a3a2a">
-<link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoiQ0FQUmF0aW9uIiwic2hvcnRfbmFtZSI6IkNBUFJhdGlvbiIsImRlc2NyaXB0aW9uIjoiUmF0aW9ucyBjYXByaW5lcyIsInN0YXJ0X3VybCI6Ii4vIiwic2NvcGUiOiIuLyIsImRpc3BsYXkiOiJzdGFuZGFsb25lIiwiYmFja2dyb3VuZF9jb2xvciI6IiMwYTFhMTAiLCJ0aGVtZV9jb2xvciI6IiMxZTVjM2EiLCJpY29ucyI6W3sic3JjIjoiaHR0cHM6Ly90aWJpeC5naXRodWIuaW8vQ2FwUmF0aW9uL2ljb24tMTkyLnBuZyIsInNpemVzIjoiMTkyeDE5MiIsInR5cGUiOiJpbWFnZS9wbmcifSx7InNyYyI6Imh0dHBzOi8vdGliaXguZ2l0aHViLmlvL0NhcFJhdGlvbi9pY29uLTUxMi5wbmciLCJzaXplcyI6IjUxMng1MTIiLCJ0eXBlIjoiaW1hZ2UvcG5nIn1dfQo=">
+<link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>CAPRation Mobile</title>
 <script>
@@ -252,8 +252,6 @@ async function chargerDonnees(){
     const today = todayStr();
     const refDoc = await getDoc(doc(db,`users/${uid}/capration/refus_${today}`));
     if(refDoc.exists()) refusData = refDoc.data()||{};
-    // Charger l'historique 7 jours en arrière-plan
-    chargerHistoriqueRefus();
 
     renderAll();
   } catch(e){
@@ -277,8 +275,8 @@ window.showTab = (tab)=>{
 // ══ RENDER ALL ══
 function renderAll(){
   renderRations();
-  try{ renderChargement(); } catch(e){ console.error('renderChargement:', e); document.getElementById('page-chargement').innerHTML=`<div class="card" style="color:red;padding:1rem">Erreur: ${e.message}</div>`; }
-  try{ renderDistribution(); } catch(e){ console.error('renderDistribution:', e); document.getElementById('page-distribution').innerHTML=`<div class="card" style="color:red;padding:1rem">Erreur: ${e.message}</div>`; }
+  renderChargement();
+  renderDistribution();
   renderRefus();
 }
 
@@ -351,10 +349,6 @@ function setTemps(obj){ localStorage.setItem('capration_bol_temps', JSON.stringi
 // ── État des coches bol (persistant localStorage) ──
 function getBolChecked(){ try{ return JSON.parse(localStorage.getItem('capration_bol_checked')||'{}'); }catch(e){ return {}; } }
 function setBolChecked(obj){ localStorage.setItem('capration_bol_checked', JSON.stringify(obj)); }
-function getAjustFacteurs(){ try{ return JSON.parse(sessionStorage.getItem('capration_ajust_facteurs')||'{}'); }catch(e){ return {}; } }
-function setAjustFacteurs(obj){ sessionStorage.setItem('capration_ajust_facteurs', JSON.stringify(obj)); }
-function getDecompte(){ try{ return JSON.parse(sessionStorage.getItem('capration_decompte')||'{}'); }catch(e){ return {}; } }
-function setDecompte(obj){ sessionStorage.setItem('capration_decompte', JSON.stringify(obj)); }
 
 // ── État des lots actifs (persistant localStorage) ──
 function getLotsActifs(){ try{ return JSON.parse(localStorage.getItem('capration_lots_actifs')||'{}'); }catch(e){ return {}; } }
@@ -372,18 +366,6 @@ window.toggleBolItem = function(nom){
   setBolChecked(checked);
   renderDistribution();
   renderChargement();
-};
-
-window.toggleLotServi = function(lotId){
-  const d = getDecompte();
-  d[lotId] = !d[lotId];
-  setDecompte(d);
-  renderDistribution();
-};
-
-window.resetDecompte = function(){
-  sessionStorage.removeItem('capration_decompte');
-  renderDistribution();
 };
 
 window.saveTempsModal = function(){
@@ -427,20 +409,8 @@ window.openTempsModal = function(){
 
 // ── Données consolidées (communes aux deux pages) ──
 function getConsolide(){
-  // Source de vérité : ration brute depuis Firebase, jamais modifiée
-  // lot.ration peut être un array (mobile) ou un objet {id:qte} (PC) — on normalise
-  function getRationArray(lot){
-    if(!lot.ration) return [];
-    if(Array.isArray(lot.ration)) return lot.ration.filter(a=>a.qte>0);
-    // Format PC : objet {id: qte}
-    return Object.entries(lot.ration)
-      .filter(([,qte])=>qte>0)
-      .map(([id,qte])=>({id:+id, nom:String(id), qte, cat:'', ms:100, ufl:0, pdin:0}));
-  }
-  const lotsAvecRation = lotsData.filter(l=>{
-    if(Array.isArray(l.ration)) return l.ration.length>0;
-    return l.ration && typeof l.ration==='object' && Object.keys(l.ration).length>0;
-  });
+  const lotsAvecRation = lotsData.filter(l=>l.ration?.length>0);
+  // Initialiser lots actifs (tous actifs par défaut)
   const actifs = getLotsActifs();
   lotsAvecRation.forEach(l=>{ if(actifs[l.id]===undefined) actifs[l.id]=true; });
   setLotsActifs(actifs);
@@ -451,36 +421,12 @@ function getConsolide(){
     const nb=lot.nb||0; nbTotal+=nb;
     (lot.ration||[]).forEach(a=>{
       if(!consolide[a.nom]) consolide[a.nom]={...a,qteTotal:0};
-      consolide[a.nom].qteTotal += a.qte*(nb||1); // quantités brutes, sans facteur
+      consolide[a.nom].qteTotal += a.qte*(nb||1);
     });
   });
   const ORDRE = {'Paille':1,'Foin':2,'Enrubannage':3,'Ensilage':4,'Herbe':5,'Aliment composé':6,'Concentré':7,'Autre':8};
   const items = Object.values(consolide).sort((a,b)=>(ORDRE[a.cat]||9)-(ORDRE[b.cat]||9));
   return {items, nbTotal, lotsAvecRation, lotsActifs};
-}
-
-// ── Calcul du facteur refus pour un lot ──
-function getFacteurLot(lotId){
-  const aj = getAjustFacteurs()[lotId];
-  return aj?.facteur || 1;
-}
-
-// ── Quantité ajustée d'un aliment bol pour un lot ──
-// appliquer le facteur refus uniquement si l'aliment est coché au bol
-function qteAjustee(nomAliment, qteBase, lotId){
-  const checked = getBolChecked();
-  const isBol = checked[nomAliment] !== false;
-  return isBol ? qteBase * getFacteurLot(lotId) : qteBase;
-}
-
-// ── kg bol d'un lot avec facteur (pour décompte et récap) ──
-function kgBolLot(lot){
-  const checked = getBolChecked();
-  const f = getFacteurLot(lot.id);
-  const ration = Array.isArray(lot.ration) ? lot.ration.filter(a=>a.qte>0) : [];
-  return ration
-    .filter(a=>checked[a.nom]!==false)
-    .reduce((s,a)=>s+a.qte*f, 0) * (lot.nb||0);
 }
 
 // ══════════════════════════════════════════════════
@@ -635,59 +581,7 @@ async function scheduleNotifications(){
   });
 }
 
-// ── Sauvegarde des lots vers Firebase (partagée entre appareils) ──
-async function sauverLotsFirebase(){
-  try{
-    await setDoc(doc(db,`users/${uid}/capration/lots`), {lots: lotsData});
-    setSyncStatus('Synchronisé ✓','ok');
-  } catch(e){
-    setSyncStatus('Erreur sync','err');
-    console.error('sauverLotsFirebase:', e);
-  }
-}
-
-window.ajusterRationMobile = async function(){
-  const CIBLE_REFUS = 0.08;
-  const checked = getBolChecked();
-  const actifs  = getLotsActifs();
-  const {lotsAvecRation} = getConsolide();
-
-  if(!lotsAvecRation.length){ showToast("Aucune ration disponible."); return; }
-
-  let nbAjustes=0, nbOK=0, nbSansRefus=0;
-  const facteurs = getAjustFacteurs();
-
-  lotsAvecRation.filter(l=>actifs[l.id]!==false).forEach(lot=>{
-    const ration = lot.ration||[];
-    const alimentsBol = ration.filter(a=>checked[a.nom]!==false);
-    if(!alimentsBol.length) return;
-
-    const refusLot = refusData[lot.id];
-    if(!refusLot || refusLot.pct==null){ nbSansRefus++; return; }
-
-    const pct = parseFloat(refusLot.pct)/100;
-    if(pct>=0.06 && pct<=0.10){ nbOK++; return; }
-
-    const facteur = (1-pct)/(1-CIBLE_REFUS);
-
-    // Stocker UNIQUEMENT le facteur — ne pas modifier lot.ration
-    facteurs[lot.id] = {
-      facteur: Math.round(facteur*1000)/1000,
-      refusPct: parseFloat(refusLot.pct),
-      refusKg: parseFloat(refusLot.kg||0),
-      date: new Date().toISOString()
-    };
-    nbAjustes++;
-  });
-
-  setAjustFacteurs(facteurs);
-  renderChargement();
-  renderDistribution();
-
-  if(nbAjustes===0 && nbOK>0)             showToast("✅ Tous les lots sont dans l'objectif 6-10%");
-  else if(nbAjustes===0 && nbSansRefus>0) showToast("⚠️ Aucun refus saisi aujourd'hui");
-  else showToast(`⚖️ ${nbAjustes} lot(s) ajusté(s) — ration de base inchangée`);
-};
+window.chronoStart = chronoStart;
 
 // ── Sons Web Audio ──
 function getAudioCtx(){
@@ -766,67 +660,49 @@ window.chronoNextEtape = function(){
 
 function renderChargement(){
   const el = document.getElementById('page-chargement');
-  const {items, nbTotal, lotsAvecRation} = getConsolide();
+  const {items: allItems, nbTotal: allNb, lotsAvecRation} = getConsolide();
   if(!lotsAvecRation.length){ el.innerHTML=`<div class="empty">📋<br>Aucune ration configurée.</div>`; return; }
 
   const COULEURS = {'Paille':'#8B6914','Foin':'#8B6914','Enrubannage':'#2d6a4f','Ensilage':'#1b5e20','Herbe':'#2d6a4f','Aliment composé':'#0d47a1','Concentré':'#4a148c','Autre':'#6b7280'};
-  const actifs  = getLotsActifs();
+  const actifs = getLotsActifs();
+  lotsAvecRation.forEach(l=>{ if(actifs[l.id]===undefined) actifs[l.id]=true; });
   const checked = getBolChecked();
-  const facteurs = getAjustFacteurs();
-  const nbLotsInactifs = lotsAvecRation.filter(l=>!actifs[l.id]).length;
-
-  // Initialiser checked (par défaut = bol)
+  // Recalculer items/nbTotal uniquement sur lots actifs
+  const ORDRE = {'Paille':1,'Foin':2,'Enrubannage':3,'Ensilage':4,'Herbe':5,'Aliment composé':6,'Concentré':7,'Autre':8};
+  const consolide = {};
+  let nbTotal = 0;
+  lotsAvecRation.filter(l=>actifs[l.id]).forEach(lot=>{
+    const nb=lot.nb||0; nbTotal+=nb;
+    (lot.ration||[]).forEach(a=>{
+      if(!consolide[a.nom]) consolide[a.nom]={...a,qteTotal:0};
+      consolide[a.nom].qteTotal += a.qte*(nb||1);
+    });
+  });
+  const items = Object.values(consolide).sort((a,b)=>(ORDRE[a.cat]||9)-(ORDRE[b.cat]||9));
   items.forEach(a=>{ if(checked[a.nom]===undefined) checked[a.nom]=true; });
   setBolChecked(checked);
 
-  // Items bol avec facteur appliqué par lot
-  // Pour le chargement : on consolide les aliments bol avec facteur par lot
-  const consoBol = {};
-  let nbTotal2 = 0;
-  lotsAvecRation.filter(l=>actifs[l.id]!==false).forEach(lot=>{
-    const nb=lot.nb||0; nbTotal2+=nb;
-    const f = getFacteurLot(lot.id);
-    (lot.ration||[]).filter(a=>checked[a.nom]!==false).forEach(a=>{
-      if(!consoBol[a.nom]) consoBol[a.nom]={...a,qteTotal:0};
-      consoBol[a.nom].qteTotal += a.qte*f*(nb||1);
-    });
-  });
-  const ORDRE = {'Paille':1,'Foin':2,'Enrubannage':3,'Ensilage':4,'Herbe':5,'Aliment composé':6,'Concentré':7,'Autre':8};
-  const itemsBol = Object.values(consoBol).sort((a,b)=>(ORDRE[a.cat]||9)-(ORDRE[b.cat]||9));
-  const totalBol = itemsBol.reduce((s,a)=>s+a.qteTotal,0);
-
   const temps = getTemps();
+  const itemsBol = items.filter(a=>checked[a.nom]);
+  const totalBol = itemsBol.reduce((s,a)=>s+a.qteTotal,0);
   const tempsTotalMin = itemsBol.reduce((s,a)=>s+(temps[a.cat]||0),0);
-
+  const nbLotsInactifs = lotsAvecRation.filter(l=>!actifs[l.id]).length;
   const cs = chronoState;
   const isRunning = cs.running;
   const isFinished = !isRunning && cs.startTs && cs.etapeIdx >= (cs.items.length||1);
   const etapesSnap = isRunning ? cs.items : itemsBol.map(a=>({nom:a.nom, cat:a.cat, tMin:temps[a.cat]||0}));
-  let cumul=0; let bolIdx=0;
-
-  // Badge ajustement global
-  const lotsAjustes = lotsAvecRation.filter(l=>actifs[l.id]!==false && facteurs[l.id]);
-  const lotsAvecRefus = lotsAvecRation.filter(l=>actifs[l.id]!==false && refusData[l.id]?.pct!=null);
-  const badgeAjust = lotsAjustes.length
-    ? `<span style="font-size:.72rem;background:#fff3e0;color:#b7791f;border-radius:6px;padding:2px 8px;font-weight:600">⚖️ Ajusté selon refus</span>`
-    : lotsAvecRefus.length
-      ? `<span style="font-size:.72rem;background:#e3f2fd;color:#0d47a1;border-radius:6px;padding:2px 8px">Refus du jour OK — ration non ajustée</span>`
-      : `<span style="font-size:.72rem;background:#f5f5f5;color:var(--gris);border-radius:6px;padding:2px 8px">Ration de base · Saisir refus pour ajuster</span>`;
+  let cumul = 0; let bolIdx = 0;
 
   el.innerHTML = `
     <div class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
-        <div class="card-title" style="margin-bottom:0">📋 Chargement — ${nbTotal2} animaux</div>
-        <div style="display:flex;gap:.4rem">
-          <button onclick="ajusterRationMobile()" style="font-size:.75rem;padding:4px 10px;border-radius:20px;border:1px solid #f9ca24;background:#fff3e0;color:#b7791f;font-weight:600;cursor:pointer">⚖️ Ajuster selon refus</button>
-          <button onclick="openTempsModal()" style="font-size:.75rem;padding:4px 10px;border-radius:20px;border:1px solid var(--vert-c);background:var(--vert-p);color:var(--vert-f);font-weight:600;cursor:pointer">⏱️ Temps</button>
-        </div>
+        <div class="card-title" style="margin-bottom:0">📋 Chargement — ${nbTotal} animaux</div>
+        <button onclick="openTempsModal()" style="font-size:.75rem;padding:4px 10px;border-radius:20px;border:1px solid var(--vert-c);background:var(--vert-p);color:var(--vert-f);font-weight:600;cursor:pointer">⏱️ Temps</button>
       </div>
       <div style="display:flex;gap:.4rem;margin-bottom:.8rem;flex-wrap:wrap">
         <span style="font-size:.75rem;background:#e8f5e9;color:var(--vert-f);border-radius:6px;padding:2px 8px;font-weight:600">🪣 ${totalBol.toFixed(0)} kg</span>
         ${tempsTotalMin>0?`<span style="font-size:.75rem;background:#e3f2fd;color:#0d47a1;border-radius:6px;padding:2px 8px;font-weight:600">⏱️ ${tempsTotalMin} min</span>`:''}
-        ${nbLotsInactifs>0?`<span style="font-size:.75rem;background:#fff3e0;color:#e65100;border-radius:6px;padding:2px 8px;font-weight:600">${nbLotsInactifs} lot(s) exclus</span>`:''}
-        ${badgeAjust}
+        ${nbLotsInactifs>0?`<span style="font-size:.75rem;background:#fff3e0;color:#e65100;border-radius:6px;padding:2px 8px;font-weight:600">${nbLotsInactifs} lot${nbLotsInactifs>1?'s':''} exclu${nbLotsInactifs>1?'s':''}</span>`:''}
       </div>
 
       <!-- Lots à distribuer -->
@@ -834,18 +710,15 @@ function renderChargement(){
         <div style="background:#f8f9fa;padding:.45rem .7rem;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gris)">🏷️ Lots à distribuer</div>
         ${lotsAvecRation.map((lot,i)=>{
           const isActif = actifs[lot.id] !== false;
-          const kgBrut = (lot.ration||[]).reduce((s,a)=>s+a.qte,0)*(lot.nb||0);
-          const f = getFacteurLot(lot.id);
-          const kgBol = kgBolLot(lot);
-          const aj = facteurs[lot.id];
-          const factPct = aj ? Math.round((aj.facteur-1)*100) : null;
-          return `<div onclick="toggleLotActif('${lot.id}');" style="display:flex;align-items:center;gap:.5rem;padding:.5rem .7rem;border-top:${i>0?'1px solid var(--bord)':'none'};cursor:pointer;opacity:${isActif?1:0.45}">
+          const totalLot = (lot.ration||[]).reduce((s,a)=>s+a.qte,0);
+          const nb = lot.nb||0;
+          return `<div onclick="toggleLotActif('${lot.id}');" style="display:flex;align-items:center;gap:.5rem;padding:.5rem .7rem;border-top:${i>0?'1px solid var(--bord)':'none'};cursor:pointer;opacity:${isActif?1:0.45};transition:opacity .15s">
             <input type="checkbox" ${isActif?'checked':''} onclick="event.stopPropagation();toggleLotActif('${lot.id}');" style="width:18px;height:18px;accent-color:var(--vert-f);flex-shrink:0;cursor:pointer">
             <div style="flex:1;min-width:0">
               <div style="font-size:.88rem;font-weight:600;${isActif?'':'text-decoration:line-through;color:var(--gris)'}">${lot.nom}</div>
-              <div style="font-size:.67rem;color:var(--gris)">${lot.nb||0} ch.${aj?` · <span style="color:${factPct>0?'#27ae60':'#c0392b'};font-weight:600">⚖️ ${factPct>0?'+':''}${factPct}% refus ${aj.refusPct.toFixed(1)}%</span>`:''}</div>
+              <div style="font-size:.67rem;color:var(--gris)">${nb} ch. · ${totalLot.toFixed(2)} kg/tête${!isActif?' · <span style="color:#e65100">exclu</span>':''}</div>
             </div>
-            <span style="font-family:monospace;font-size:.9rem;font-weight:700;color:${isActif?'var(--vert-f)':'#bbb'}">${kgBol.toFixed(0)} kg</span>
+            <span style="font-family:monospace;font-size:.9rem;font-weight:700;color:${isActif?'var(--vert-f)':'#bbb'}">${(totalLot*nb).toFixed(0)} kg</span>
           </div>`;
         }).join('')}
       </div>
@@ -855,19 +728,9 @@ function renderChargement(){
         <div style="background:#f8f9fa;padding:.45rem .7rem;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gris)">🪣 Aliments au bol</div>
         ${items.length===0?`<div style="padding:.6rem .7rem;font-size:.82rem;color:var(--gris)">Aucun lot actif.</div>`:''}
         ${items.map((a,i)=>{
-          const isBol = checked[a.nom]!==false;
+          const isBol = checked[a.nom];
           if(isBol) bolIdx++;
-          // Quantité ajustée = moyenne pondérée des facteurs des lots actifs
-          const qteTotaleAjust = isBol ? (() => {
-            let total=0;
-            lotsAvecRation.filter(l=>actifs[l.id]!==false).forEach(lot=>{
-              const ra = (lot.ration||[]).find(r=>r.nom===a.nom);
-              if(ra) total += ra.qte * getFacteurLot(lot.id) * (lot.nb||1);
-            });
-            return total;
-          })() : a.qteTotal;
-          const qteBrute = a.qteTotal;
-          return `<div onclick="toggleBolItem('${a.nom.replace(/'/g,"\\'").replace(/"/g,"&quot;")}');" style="display:flex;align-items:center;gap:.5rem;padding:.5rem .7rem;border-top:${i>0?'1px solid var(--bord)':'none'};cursor:pointer;opacity:${isBol?1:0.42}">
+          return `<div onclick="toggleBolItem('${a.nom.replace(/'/g,"\\'").replace(/"/g,"&quot;")}');" style="display:flex;align-items:center;gap:.5rem;padding:.5rem .7rem;border-top:${i>0?'1px solid var(--bord)':'none'};cursor:pointer;opacity:${isBol?1:0.42};transition:opacity .15s">
             <input type="checkbox" ${isBol?'checked':''} onclick="event.stopPropagation();toggleBolItem('${a.nom.replace(/'/g,"\\'").replace(/"/g,"&quot;")}');" style="width:18px;height:18px;accent-color:var(--vert-f);flex-shrink:0;cursor:pointer">
             ${isBol?`<span style="font-size:.9rem;font-weight:800;color:${COULEURS[a.cat]||'#999'};width:20px;text-align:center;flex-shrink:0">${bolIdx}</span>`:`<span style="width:20px;flex-shrink:0"></span>`}
             <div style="flex:1;min-width:0">
@@ -875,8 +738,8 @@ function renderChargement(){
               <div style="font-size:.67rem;color:var(--gris)">${a.cat}${!isBol?' · <span style="color:#e65100">hors bol</span>':''}</div>
             </div>
             <div style="text-align:right;flex-shrink:0">
-              <div style="font-size:.9rem;font-weight:700;color:${isBol?'var(--vert-f)':'#e65100'};font-family:monospace">${qteTotaleAjust.toFixed(0)} kg</div>
-              <div style="font-size:.6rem;color:var(--gris)">${nbTotal2>0?(qteTotaleAjust/nbTotal2).toFixed(2):0} kg/tête</div>
+              <div style="font-size:.9rem;font-weight:700;color:${isBol?'var(--vert-f)':'#e65100'};font-family:monospace">${a.qteTotal.toFixed(0)} kg</div>
+              <div style="font-size:.6rem;color:var(--gris)">${nbTotal>0?(a.qteTotal/nbTotal).toFixed(2):0} kg/tête</div>
             </div>
           </div>`;
         }).join('')}
@@ -884,7 +747,7 @@ function renderChargement(){
 
       <!-- Chrono -->
       ${itemsBol.length>0 ? `
-      <div id="chrono-bloc" style="background:${isFinished?'#e8f5e9':isRunning?'#0d47a1':'#1a3a2a'};border-radius:12px;padding:1rem;margin-bottom:.8rem">
+      <div id="chrono-bloc" style="background:${isFinished?'#e8f5e9':isRunning?'#0d47a1':'#1a3a2a'};border-radius:12px;padding:1rem;margin-bottom:.8rem;transition:background .3s">
         ${isFinished ? `
           <div style="text-align:center;color:var(--vert-f)">
             <div style="font-size:2rem">✅</div>
@@ -923,14 +786,13 @@ function renderChargement(){
         `}
       </div>` : ''}
 
-      <!-- Timeline protocole -->
+      <!-- Timeline -->
       ${etapesSnap.length===0?`<div style="font-size:.85rem;color:var(--gris);padding:.3rem 0">Cochez des aliments au bol pour voir le protocole.</div>`:''}
       ${etapesSnap.map((a,i)=>{
-        const tMin=a.tMin||0;
-        const isCurrent=isRunning&&i===cs.etapeIdx;
-        const isDone=isRunning?i<cs.etapeIdx:false;
-        cumul+=tMin;
-        const qteLigne = itemsBol[i]?.qteTotal||0;
+        const tMin = a.tMin||0;
+        const isCurrent = isRunning && i===cs.etapeIdx;
+        const isDone = isRunning ? i<cs.etapeIdx : false;
+        cumul += tMin;
         return `
         <div id="chrono-row-${i}" style="display:flex;gap:.7rem;align-items:stretch;padding:.35rem 0;border-radius:8px;${isCurrent?'background:#e3f2fd;':''}opacity:${isDone?0.4:1}">
           <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;width:34px">
@@ -943,10 +805,10 @@ function renderChargement(){
                 <div style="font-weight:600;font-size:.95rem">${a.nom}</div>
                 <div style="font-size:.7rem;color:var(--gris)">${a.cat}</div>
               </div>
-              <div style="text-align:right;flex-shrink:0">
-                <div style="font-size:1rem;font-weight:700;color:var(--vert-f);font-family:monospace">${qteLigne.toFixed(0)} kg</div>
-                <div style="font-size:.62rem;color:var(--gris)">${nbTotal2>0?(qteLigne/nbTotal2).toFixed(2):0} kg/tête</div>
-              </div>
+              ${itemsBol[i]?`<div style="text-align:right;flex-shrink:0">
+                <div style="font-size:1rem;font-weight:700;color:var(--vert-f);font-family:monospace">${itemsBol[i].qteTotal.toFixed(0)} kg</div>
+                <div style="font-size:.62rem;color:var(--gris)">${nbTotal>0?(itemsBol[i].qteTotal/nbTotal).toFixed(2):0} kg/tête</div>
+              </div>`:''}
             </div>
             ${tMin>0?`<div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.3rem">
               <span style="font-size:.75rem;background:${isCurrent?'#0d47a1':'#e3f2fd'};color:${isCurrent?'#fff':'#0d47a1'};border-radius:6px;padding:2px 8px;font-weight:600">🔄 ${tMin} min</span>
@@ -966,51 +828,58 @@ function renderChargement(){
   }
 }
 
-
 // PAGE DISTRIBUTION
 // ══════════════════════════════════════════════════
+// État décompte distribution
+function getDecompte(){ try{ return JSON.parse(sessionStorage.getItem('capration_decompte')||'{}'); }catch(e){ return {}; } }
+function setDecompte(obj){ sessionStorage.setItem('capration_decompte', JSON.stringify(obj)); }
+
+window.toggleLotServi = function(lotId){
+  const d = getDecompte();
+  d[lotId] = !d[lotId];
+  setDecompte(d);
+  renderDistribution();
+};
+window.resetDecompte = function(){
+  sessionStorage.removeItem('capration_decompte');
+  renderDistribution();
+};
+
 function renderDistribution(){
   const el = document.getElementById('page-distribution');
-  const {items, nbTotal, lotsAvecRation} = getConsolide();
+  const {items, nbTotal, lotsAvecRation, lotsActifs} = getConsolide();
   if(!lotsAvecRation.length){ el.innerHTML=`<div class="empty">🪣<br>Aucune ration configurée.</div>`; return; }
 
-  const checked  = getBolChecked();
-  const actifs   = getLotsActifs();
+  const checked = getBolChecked();
+  const actifs = getLotsActifs();
   const decompte = getDecompte();
-  const facteurs = getAjustFacteurs();
   const lotsDistrib = lotsAvecRation.filter(l=>actifs[l.id]!==false);
   const nbLotsInactifs = lotsAvecRation.filter(l=>!actifs[l.id]).length;
 
-  // Initialiser checked
-  lotsAvecRation.forEach(lot=>(lot.ration||[]).forEach(a=>{ if(checked[a.nom]===undefined) checked[a.nom]=true; }));
+  const totalBol = items.filter(a=>checked[a.nom]).reduce((s,a)=>s+a.qteTotal,0);
+  const totalRobot = items.filter(a=>!checked[a.nom]).reduce((s,a)=>s+a.qteTotal,0);
 
-  // Totaux avec facteur par lot
-  const totalBol   = lotsDistrib.reduce((s,l)=>s+kgBolLot(l), 0);
-  const totalRobot = lotsDistrib.reduce((s,l)=>s+(l.ration||[]).filter(a=>checked[a.nom]===false).reduce((sq,a)=>sq+a.qte,0)*(l.nb||0), 0);
-
-  // Décompte : kg déjà servis (cochés)
-  const kgServi = lotsDistrib.filter(l=>decompte[l.id]).reduce((s,l)=>s+kgBolLot(l), 0);
+  // Calcul décompte : restant dans le bol
+  let kgServi = 0;
+  lotsDistrib.forEach(lot=>{
+    if(decompte[lot.id]){
+      kgServi += (lot.ration||[]).filter(a=>checked[a.nom]).reduce((s,a)=>s+a.qte,0) * (lot.nb||0);
+    }
+  });
   const kgRestant = totalBol - kgServi;
   const nbLotsServis = lotsDistrib.filter(l=>decompte[l.id]).length;
   const nbLotsRestants = lotsDistrib.length - nbLotsServis;
   const decompteActif = nbLotsServis > 0;
 
-  const lotsAvecRefusD = lotsDistrib.filter(l=>refusData[l.id]?.pct!=null);
-  const lotsAjustesD = lotsDistrib.filter(l=>facteurs[l.id]);
-  const msgRefus = lotsAjustesD.length
-    ? `<div style="font-size:.72rem;background:#fff3e0;color:#b7791f;border-radius:6px;padding:3px 9px;margin-bottom:.5rem;font-weight:600">⚖️ Quantités ajustées selon refus</div>`
-    : lotsAvecRefusD.length
-      ? `<div style="font-size:.72rem;background:#e3f2fd;color:#0d47a1;border-radius:6px;padding:3px 9px;margin-bottom:.5rem">Refus saisis — dans l'objectif, ration inchangée</div>`
-      : `<div style="font-size:.72rem;background:#f5f5f5;color:var(--gris);border-radius:6px;padding:3px 9px;margin-bottom:.5rem">Ration de base · Saisir les refus dans l'onglet Refus pour ajuster</div>`;
-
   el.innerHTML = `
     <!-- DÉCOMPTE BOL -->
     <div class="card" style="border:2px solid ${kgRestant<=0&&decompteActif?'var(--vert-c)':'var(--bord)'}">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.4rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.6rem">
         <div class="card-title" style="margin-bottom:0">🪣 Décompte bol</div>
         ${decompteActif?`<button onclick="resetDecompte()" style="font-size:.72rem;padding:3px 9px;border-radius:20px;border:1px solid #ddd;background:#f5f5f5;color:var(--gris);cursor:pointer">↺ Reset</button>`:''}
       </div>
-      ${msgRefus}
+
+      <!-- Jauge restant -->
       <div style="text-align:center;margin-bottom:.8rem">
         <div style="font-size:.75rem;color:var(--gris);margin-bottom:.2rem">${decompteActif?'Restant dans le bol':'Total bol à distribuer'}</div>
         <div style="font-family:monospace;font-size:2.8rem;font-weight:800;color:${kgRestant<=0&&decompteActif?'var(--vert-c)':kgRestant<totalBol*0.3&&decompteActif?'#d68910':'var(--vert-f)'};line-height:1">
@@ -1021,57 +890,52 @@ function renderDistribution(){
           <div style="height:100%;background:${kgRestant<=0&&decompteActif?'var(--vert-c)':'var(--vert-f)'};border-radius:20px;width:${decompteActif?Math.max(0,(kgRestant/totalBol)*100).toFixed(1):100}%;transition:width .4s"></div>
         </div>`:''}
       </div>
-      <!-- Liste des lots à cocher -->
+
+      <!-- Lots avec coche "servi" -->
       <div style="border:1px solid var(--bord);border-radius:10px;overflow:hidden">
         <div style="background:#f8f9fa;padding:.4rem .7rem;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gris)">Cochez après avoir distribué chaque lot</div>
-        ${(()=>{
-          const kgDejaServi = lotsDistrib.filter(l=>decompte[l.id]).reduce((s,l)=>s+kgBolLot(l), 0);
-          const kgRestantActuel = totalBol - kgDejaServi;
-          return lotsDistrib.map((lot,i)=>{
-            const servi = !!decompte[lot.id];
-            const kgLot = kgBolLot(lot);
-            const kgApres = servi ? kgRestantActuel : kgRestantActuel - kgLot;
-            return `<div onclick="toggleLotServi('${lot.id}');" style="display:flex;align-items:center;gap:.55rem;padding:.6rem .7rem;border-top:${i>0?'1px solid var(--bord)':'none'};cursor:pointer;background:${servi?'#f0fdf4':'#fff'}">
-              <input type="checkbox" ${servi?'checked':''} onclick="event.stopPropagation();toggleLotServi('${lot.id}');" style="width:22px;height:22px;accent-color:var(--vert-f);flex-shrink:0;cursor:pointer">
-              <div style="flex:1;min-width:0">
-                <div style="font-size:.9rem;font-weight:600;${servi?'text-decoration:line-through;color:var(--gris)':''}">${lot.nom}</div>
-                <div style="font-size:.68rem;color:var(--gris)">${lot.nb||0} ch. · ${kgLot.toFixed(0)} kg au bol${facteurs[lot.id]?' ⚖️':''}</div>
-              </div>
-              <div style="text-align:right;flex-shrink:0">
-                ${servi
-                  ? `<div style="font-size:.75rem;color:var(--vert-c);font-weight:700">✓ Distribué</div>`
-                  : `<div style="font-size:.75rem;color:var(--gris)">→ reste après</div>
-                     <div style="font-family:monospace;font-size:1rem;font-weight:700;color:${kgApres<0?'#c0392b':'var(--vert-f)'}">${kgApres.toFixed(0)} kg</div>`
-                }
-              </div>
-            </div>`;
-          }).join('');
-        })()}
+        ${lotsDistrib.map((lot,i)=>{
+          const servi = !!decompte[lot.id];
+          const kgLot = (lot.ration||[]).filter(a=>checked[a.nom]).reduce((s,a)=>s+a.qte,0) * (lot.nb||0);
+          const kgRestantAvant = totalBol - lotsDistrib.slice(0,i).filter(l=>decompte[l.id]).reduce((s,l)=>{
+            return s + (l.ration||[]).filter(a=>checked[a.nom]).reduce((sq,a)=>sq+a.qte,0)*(l.nb||0);
+          },0);
+          const kgRestantApres = kgRestantAvant - kgLot;
+          return `<div onclick="toggleLotServi('${lot.id}');" style="display:flex;align-items:center;gap:.55rem;padding:.6rem .7rem;border-top:${i>0?'1px solid var(--bord)':'none'};cursor:pointer;background:${servi?'#f0fdf4':'#fff'};transition:background .2s">
+            <input type="checkbox" ${servi?'checked':''} onclick="event.stopPropagation();toggleLotServi('${lot.id}');" style="width:22px;height:22px;accent-color:var(--vert-f);flex-shrink:0;cursor:pointer">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:.9rem;font-weight:600;${servi?'text-decoration:line-through;color:var(--gris)':''}">${lot.nom}</div>
+              <div style="font-size:.68rem;color:var(--gris)">${lot.nb||0} ch. · ${kgLot.toFixed(0)} kg au bol</div>
+            </div>
+            <div style="text-align:right;flex-shrink:0">
+              ${servi
+                ? `<div style="font-size:.75rem;color:var(--vert-c);font-weight:700">✓ Distribué</div>`
+                : `<div style="font-size:.75rem;color:var(--gris)">→ reste</div>
+                   <div style="font-family:monospace;font-size:1rem;font-weight:700;color:var(--vert-f)">${kgRestantApres.toFixed(0)} kg</div>`
+              }
+            </div>
+          </div>`;
+        }).join('')}
       </div>
     </div>
 
-    <!-- DÉTAIL PAR LOT -->
+    <!-- RÉCAP PAR LOT -->
     <div class="card">
       <div class="card-title">📊 Détail par lot</div>
-      ${nbLotsInactifs>0?`<div style="font-size:.72rem;background:#fff3e0;color:#e65100;border-radius:6px;padding:3px 9px;margin-bottom:.6rem;display:inline-block;font-weight:600">⚠️ ${nbLotsInactifs} lot(s) exclu(s) — voir Chargement</div>`:''}
+      ${nbLotsInactifs>0?`<div style="font-size:.72rem;background:#fff3e0;color:#e65100;border-radius:6px;padding:3px 9px;margin-bottom:.6rem;display:inline-block;font-weight:600">⚠️ ${nbLotsInactifs} lot${nbLotsInactifs>1?'s':''} exclu${nbLotsInactifs>1?'s':''} (voir Chargement)</div>`:''}
       ${lotsAvecRation.map(lot=>{
         const isActif = actifs[lot.id] !== false;
-        const f = getFacteurLot(lot.id);
-        const totalBolLot  = (lot.ration||[]).filter(a=>checked[a.nom]!==false).reduce((s,a)=>s+a.qte*f, 0);
-        const totalHorsLot = (lot.ration||[]).filter(a=>checked[a.nom]===false).reduce((s,a)=>s+a.qte,   0);
+        const totalBolLot = (lot.ration||[]).filter(a=>checked[a.nom]).reduce((s,a)=>s+a.qte,0);
+        const totalHorsLot = (lot.ration||[]).filter(a=>!checked[a.nom]).reduce((s,a)=>s+a.qte,0);
         const nb = lot.nb||0;
-        const aj = facteurs[lot.id];
-        const factPct = aj ? Math.round((aj.facteur-1)*100) : null;
-        const factCol = factPct>0 ? '#27ae60' : '#c0392b';
-        return `<div style="padding:.55rem 0;border-bottom:1px solid var(--bord);opacity:${isActif?1:0.4}">
+        return `<div style="padding:.5rem 0;border-bottom:1px solid var(--bord);opacity:${isActif?1:0.4}">
           <div style="display:flex;justify-content:space-between;align-items:center">
             <span style="font-weight:600;font-size:.9rem;${isActif?'':'text-decoration:line-through;color:var(--gris)'}">${lot.nom} <span style="font-weight:400;color:var(--gris);font-size:.75rem">${nb} ch.</span></span>
             <span style="font-family:monospace;font-weight:700;font-size:1rem;color:${isActif?'var(--vert-f)':'#bbb'}">${isActif?(totalBolLot*nb).toFixed(0):'—'} kg</span>
           </div>
-          ${isActif?`<div style="font-size:.72rem;color:var(--gris);margin-top:3px;display:flex;gap:.5rem;flex-wrap:wrap">
+          ${isActif?`<div style="font-size:.72rem;color:var(--gris);margin-top:3px;display:flex;gap:.6rem;flex-wrap:wrap">
             <span>🪣 ${totalBolLot.toFixed(2)} kg/tête</span>
             ${totalHorsLot>0?`<span style="color:#e65100">🤖 Robot : ${totalHorsLot.toFixed(2)} kg/tête</span>`:''}
-            ${aj?`<span style="color:${factCol};font-weight:600;background:${factCol}18;border-radius:4px;padding:0 5px">⚖️ ${factPct>0?'+':''}${factPct}% · Refus ${aj.refusPct.toFixed(1)}%</span>`:''}
           </div>`:`<div style="font-size:.72rem;color:#e65100;margin-top:2px">Exclu aujourd'hui</div>`}
         </div>`;
       }).join('')}
@@ -1086,68 +950,10 @@ function renderDistribution(){
     </div>`;
 }
 
-
 // PAGE REFUS
 // ══════════════════════════════════════════════════
 let refusMode = 'kg';
-let refusHistorique = {}; // {date: {lotId: {kg, pct}}}
-
 window.setRefusMode = (mode)=>{ refusMode=mode; renderRefus(); };
-
-// Charger l'historique des 7 derniers jours
-async function chargerHistoriqueRefus(){
-  if(!uid) return;
-  const dates = [];
-  for(let i=1;i<=7;i++){
-    const d = new Date(); d.setDate(d.getDate()-i);
-    dates.push(d.toISOString().split('T')[0]);
-  }
-  for(const date of dates){
-    try{
-      const snap = await getDoc(doc(db,`users/${uid}/capration/refus_${date}`));
-      if(snap.exists()) refusHistorique[date] = snap.data()||{};
-    } catch(e){}
-  }
-  renderRefus();
-}
-
-function getStatutRefus(pct){
-  const p = parseFloat(pct)||0;
-  if(p===0)   return {col:'#9e9e9e', bg:'#f5f5f5', label:'Non saisi',   icon:'—'};
-  if(p<6)     return {col:'#c0392b', bg:'#fdecea', label:'Trop faible', icon:'⚠️'};
-  if(p<=10)   return {col:'#2e7d32', bg:'#e8f5e9', label:'Optimal',     icon:'✅'};
-  if(p<=15)   return {col:'#d68910', bg:'#fff3e0', label:'Élevé',       icon:'⚠️'};
-  return       {col:'#c0392b', bg:'#fdecea', label:'Trop élevé',icon:'🚨'};
-}
-
-function miniSparkline(lotId, lots7j){
-  // Barres des 7 derniers jours (du plus vieux au plus récent)
-  const dates = Object.keys(lots7j).sort();
-  if(!dates.length) return '';
-  const maxPct = 20;
-  const bars = dates.map(date=>{
-    const d = lots7j[date];
-    const pct = parseFloat(d?.pct)||0;
-    const h = Math.min(pct/maxPct*100,100);
-    const {col} = getStatutRefus(pct);
-    return `<div title="${date}: ${pct}%" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px">
-      <div style="font-size:6px;color:#bbb">${date.slice(8)}</div>
-      <div style="width:100%;height:32px;display:flex;align-items:flex-end">
-        <div style="width:100%;height:${h}%;background:${col};border-radius:2px 2px 0 0;min-height:2px"></div>
-      </div>
-      <div style="font-size:6px;color:${col};font-weight:700">${pct>0?pct+'%':''}</div>
-    </div>`;
-  }).join('');
-  return `<div style="margin-top:.6rem">
-    <div style="font-size:.65rem;color:var(--gris);margin-bottom:.3rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Historique 7 jours</div>
-    <div style="display:flex;gap:3px;align-items:flex-end;height:52px">${bars}</div>
-    <div style="display:flex;justify-content:space-between;margin-top:.25rem">
-      <span style="font-size:.62rem;color:#2e7d32">✅ Optimal 6-10%</span>
-      <span style="font-size:.62rem;color:#d68910">⚠️ Élevé >10%</span>
-      <span style="font-size:.62rem;color:#c0392b">🚨 >15%</span>
-    </div>
-  </div>`;
-}
 
 function renderRefus(){
   const el = document.getElementById('page-refus');
@@ -1157,12 +963,6 @@ function renderRefus(){
 
   el.innerHTML = `
     <div class="sync-banner">📅 Refus du ${today}</div>
-    <div class="card" style="background:#f0fdf4;border-color:#bbf7d0;margin-bottom:.6rem;padding:.6rem .8rem">
-      <div style="font-size:.78rem;color:#166534;line-height:1.6">
-        <b>Objectif : 6–10% de refus</b><br>
-        <span style="font-size:.72rem">Moins de 6% = ration trop juste, risque d'acidose. Plus de 15% = surconsommation ou problème de palatabilité.</span>
-      </div>
-    </div>
     <div style="display:flex;gap:.4rem;margin-bottom:.75rem">
       <div class="chip ${refusMode==='kg'?'active':''}" onclick="setRefusMode('kg')">en kg</div>
       <div class="chip ${refusMode==='pct'?'active':''}" onclick="setRefusMode('pct')">en %</div>
@@ -1173,54 +973,31 @@ function renderRefus(){
       const valSaisie = refusLot.valeur ?? '';
       const valKg = refusLot.kg ?? 0;
       const pct = totalRation>0 ? (valKg/totalRation*100).toFixed(1) : 0;
-      const statut = getStatutRefus(valKg>0?pct:0);
-
-      // Historique de ce lot sur 7 jours
-      const histo7 = {};
-      Object.entries(refusHistorique).forEach(([date,data])=>{
-        if(data[lot.id]) histo7[date]=data[lot.id];
-      });
-
-      // Alerte tendance
-      const pcts7 = Object.values(histo7).map(d=>parseFloat(d.pct)||0).filter(p=>p>0);
-      const moy7 = pcts7.length ? (pcts7.reduce((a,b)=>a+b,0)/pcts7.length).toFixed(1) : null;
 
       return `<div class="card">
         <div class="lot-header">
           <div class="lot-name">${lot.nom}</div>
           <div class="lot-badge">${lot.nb||0} ch.</div>
         </div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem">
-          <div class="lot-sub">Distribué : <b>${totalRation.toFixed(0)} kg/j</b></div>
-          ${moy7!==null?`<div style="font-size:.68rem;color:var(--gris)">Moy. 7j : <b>${moy7}%</b></div>`:''}
-        </div>
-
-        ${valKg>0?`<div style="display:flex;align-items:center;gap:.6rem;padding:.5rem .7rem;background:${statut.bg};border-radius:10px;margin-bottom:.5rem;border:1px solid ${statut.col}30">
-          <div style="font-size:1.3rem">${statut.icon}</div>
-          <div style="flex:1">
-            <div style="font-weight:700;color:${statut.col};font-size:.95rem">${valKg.toFixed(1)} kg — ${pct}%</div>
-            <div style="font-size:.7rem;color:${statut.col}">${statut.label}</div>
-          </div>
-          ${parseFloat(pct)<6&&valKg>0?`<div style="font-size:.65rem;color:#c0392b;text-align:right">Risque acidose<br>↑ Augmenter ration</div>`:
-            parseFloat(pct)>15?`<div style="font-size:.65rem;color:#c0392b;text-align:right">Réduire la ration<br>ou vérifier appétit</div>`:
-            parseFloat(pct)>10?`<div style="font-size:.65rem;color:#d68910;text-align:right">Surveiller<br>tendance</div>`:''}
-        </div>`:''}
-
-        <div class="refus-form">
-          <span class="refus-label">Saisir refus</span>
+        <div class="lot-sub">Distribué : ${totalRation.toFixed(0)} kg/j</div>
+        <div class="refus-form" style="margin-top:.4rem">
+          <span class="refus-label">Refus total</span>
           <input class="refus-input" type="number" id="refus-${lot.id}"
             value="${valSaisie}" placeholder="0" min="0" step="${refusMode==='pct'?'0.5':'1'}">
           <span class="refus-unit">${refusMode==='kg'?'kg':'%'}</span>
         </div>
-        <button class="btn-save" style="width:100%;margin-top:.5rem;padding:.7rem" onclick="sauvegarderRefus(${lot.id},${totalRation.toFixed(1)})">
+        ${valKg>0 ? `<div style="display:flex;justify-content:space-between;font-size:.8rem;padding:.4rem .6rem;background:${pct>10?'#fdecea':'var(--vert-p)'};border-radius:8px;margin-top:.4rem">
+          <span style="color:var(--gris)">Enregistré</span>
+          <span style="font-weight:700;color:${pct>10?'var(--danger)':'var(--vert)'}">${valKg.toFixed(1)} kg — ${pct}%</span>
+        </div>` : ''}
+        <button class="btn-save" style="width:100%;margin-top:.6rem;padding:.7rem" onclick="sauvegarderRefusSimple(${lot.id},${totalRation.toFixed(1)})">
           💾 Enregistrer
         </button>
-        ${miniSparkline(lot.id, histo7)}
       </div>`;
     }).join('')}`;
 }
 
-window.sauvegarderRefus = async(lotId, totalRation)=>{
+window.sauvegarderRefusSimple = async(lotId, totalRation)=>{
   const lot = lotsData.find(l=>l.id===lotId);
   if(!lot) return;
   const raw = parseFloat(document.getElementById(`refus-${lotId}`)?.value)||0;
@@ -1231,8 +1008,7 @@ window.sauvegarderRefus = async(lotId, totalRation)=>{
   const today = todayStr();
   try{
     await setDoc(doc(db,`users/${uid}/capration/refus_${today}`), refusData);
-    const statut = getStatutRefus(pct);
-    showToast(`${statut.icon} ${lot.nom} : ${kg.toFixed(1)} kg (${pct}%) — ${statut.label}`);
+    showToast(`✅ ${lot.nom} : ${kg.toFixed(1)} kg (${pct}%)`);
   } catch(e){
     localStorage.setItem('cap3_mobile_refus_'+today, JSON.stringify(refusData));
     showToast(`💾 Sauvegardé en local`);
