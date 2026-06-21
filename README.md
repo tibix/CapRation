@@ -14,7 +14,7 @@ CapriRation est un outil professionnel de rationnement caprin basé sur les norm
 | Version | Lien |
 |---|---|
 | 📱 Mobile (Distribution) | [tibix.github.io/CapriRation/](https://tibix.github.io/CapriRation/) |
-| 🖥️ PC (Calcul des rations) | [tibix.github.io/CapriRation/CapRation_PC.html](https://tibix.github.io/CapriRation/CapRation_PC.html) |
+| 🖥️ PC (Calcul des rations) | [tibix.github.io/CapriRation/CapRation_PC.html](https://tibix.github.io/CapriRation/CapriRation_PC.html) |
 
 ---
 
